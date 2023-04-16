@@ -1,3 +1,5 @@
+use std::fmt::Write as _;
+
 use super::params::is_primitive_type;
 use super::processor::HttpVerb;
 
@@ -24,8 +26,6 @@ pub struct Hook {
     pub return_type: String,
     pub is_mutation: bool,
 
-    pub query_key_base: String,
-
     // params
     pub query_params: Vec<HookQueryParam>,
     pub body_params: Vec<HookBodyParam>,
@@ -35,7 +35,7 @@ pub struct Hook {
 ///
 /// A react hook which uses react-query to pull data from some endpoint. Here's an example:
 ///
-/// ```
+/// ```ts
 /// export const useCenters = (params: PaginationParams) => {
 ///   return useQuery<Centers[]>(
 ///    ['centers', params],
@@ -50,30 +50,31 @@ impl Hook {
         let mut hook_args = String::new();
 
         for (index, arg) in self.path_params.iter().enumerate() {
-            hook_args.push_str(&format!("{}: {}", arg.hook_arg_name, arg.hook_arg_type));
+            let _ = write!(hook_args, "{}: {}", arg.hook_arg_name, arg.hook_arg_type);
             if index != self.path_params.len() - 1 {
                 hook_args.push_str(", ");
             }
         }
 
-        if self.path_params.len() > 0 && self.query_params.len() > 0 {
+        if !self.path_params.is_empty() && !self.query_params.is_empty() {
             hook_args.push_str(", ");
         }
 
         for (index, arg) in self.query_params.iter().enumerate() {
-            hook_args.push_str(&format!("{}: {}", arg.hook_arg_name, arg.hook_arg_type));
+            let _ = write!(hook_args, "{}: {}", arg.hook_arg_name, arg.hook_arg_type);
             if index != self.query_params.len() - 1 {
                 hook_args.push_str(", ");
             }
         }
 
-        if (self.path_params.len() > 0 || self.query_params.len() > 0) && self.body_params.len() > 0
+        if (!self.path_params.is_empty() || !self.query_params.is_empty())
+            && !self.body_params.is_empty()
         {
             hook_args.push_str(", ");
         }
 
         for (index, arg) in self.body_params.iter().enumerate() {
-            hook_args.push_str(&format!("{}: {}", arg.hook_arg_name, arg.hook_arg_type));
+            let _ = write!(hook_args, "{}: {}", arg.hook_arg_name, arg.hook_arg_type);
             if index != self.body_params.len() - 1 {
                 hook_args.push_str(", ");
             }
@@ -95,7 +96,7 @@ impl Hook {
             variables.push_str("  const queryClient = useQueryClient()\n");
         }
 
-        if self.query_params.len() > 0 {
+        if !self.query_params.is_empty() {
             variables.push_str("  const queryParams: Record<string, any> = Object.assign({}, ");
             let query_param_iter = self.query_params.iter();
             for (index, param) in query_param_iter.clone().enumerate() {
@@ -122,7 +123,7 @@ impl Hook {
             variables.push_str(")\n");
         }
 
-        if self.path_params.len() > 0 {
+        if !self.path_params.is_empty() {
             variables.push_str("  const pathParams = Object.assign({}, ");
             let path_param_iter = self.path_params.iter();
             for (index, param) in path_param_iter.clone().enumerate() {
@@ -140,7 +141,7 @@ impl Hook {
             variables.push_str(")\n");
         }
 
-        if self.body_params.len() > 0 {
+        if !self.body_params.is_empty() {
             variables.push_str("  const bodyParams = Object.assign({}, ");
             let body_param_iter = self.body_params.iter();
             for (index, param) in body_param_iter.clone().enumerate() {
@@ -175,20 +176,22 @@ impl Hook {
 
         let mut query_key = String::new();
 
-        for (index, arg) in self.path_params.iter().enumerate() {
-            if self.is_mutation {
-                query_key.push_str("params.");
-            }
-            query_key.push_str(&arg.hook_arg_name);
-            if index != self.path_params.len() - 1 {
-                query_key.push_str(", ");
-            }
-        }
+        // // INCLUDE PATH PARAMS IN QUERY KEY
+        // for (index, arg) in self.path_params.iter().enumerate() {
+        //     if self.is_mutation {
+        //         query_key.push_str("params.");
+        //     }
+        //     query_key.push_str(&arg.hook_arg_name);
+        //     if index != self.path_params.len() - 1 {
+        //         query_key.push_str(", ");
+        //     }
+        // }
+        //
+        // if !self.path_params.is_empty() && !self.query_params.is_empty() {
+        //     query_key.push_str(", ");
+        // }
 
-        if self.path_params.len() > 0 && self.query_params.len() > 0 {
-            query_key.push_str(", ");
-        }
-
+        // INCLUDE QUERY PARAMS IN QUERY KEY
         for (index, arg) in self.query_params.iter().enumerate() {
             if self.is_mutation {
                 query_key.push_str("params.");
@@ -199,7 +202,8 @@ impl Hook {
             }
         }
 
-        if (self.path_params.len() > 0 || self.query_params.len() > 0) && self.body_params.len() > 0
+        if (/* !self.path_params.is_empty() || */!self.query_params.is_empty())
+            && !self.body_params.is_empty()
         {
             query_key.push_str(", ");
         }
@@ -214,15 +218,34 @@ impl Hook {
             }
         }
 
-        if query_key.len() > 0 {
+        if !query_key.is_empty() {
             query_key.insert_str(0, ", ")
         }
-        query_key.insert_str(0, &format!("{:?}", self.query_key_base));
+
+        let query_key_base = self
+            .endpoint_url
+            .trim_start_matches("/api/")
+            .split('/')
+            .into_iter()
+            .map(|t| {
+                // in actix-web, paths which have {} denote a path param
+                if t.starts_with('{') && t.ends_with('}') {
+                    let path_param = t.chars().skip(1).take(t.len() - 2).collect::<String>();
+                    format!("pathParams.{path_param}")
+                } else {
+                    format!("\"{t}\"")
+                }
+            })
+            .collect::<Vec<_>>();
+
+        query_key.insert_str(0, &query_key_base.join(", "));
 
         query_key
     }
+}
 
-    pub fn to_string(&self) -> String {
+impl ToString for Hook {
+    fn to_string(&self) -> String {
         if self.is_mutation {
             format!(
                 r#"export const {hook_name} = (params: {{{hook_args}}}) => {{
@@ -234,34 +257,34 @@ impl Hook {
             }},
         }})).json(),
         {{
+            mutationKey: [{query_key}],
             onSuccess: () => queryClient.invalidateQueries([{query_key}]),
         }}
     )
 }}"#,
                 variables = self.build_vars_string(),
                 authorization_header = if self.uses_auth {
-                    "'Authorization': `${auth.accessToken}`,\n              "
+                    "'Authorization': `Bearer ${auth.accessToken}`,\n              "
                 } else {
                     ""
                 },
-                query_body = if self.body_params.len() > 0 {
+                query_body = if !self.body_params.is_empty() {
                     "body: JSON.stringify(bodyParams),\n"
                 } else {
                     ""
                 },
-                query_string = if self.query_params.len() > 0 {
+                query_string = if !self.query_params.is_empty() {
                     "?${new URLSearchParams(queryParams).toString()}"
                 } else {
                     ""
                 },
-                endpoint_url = self.endpoint_url.replace("{", "${pathParams."),
-                endpoint_verb = &format!("{:?}", self.endpoint_verb),
+                endpoint_url = self.endpoint_url.replace('{', "${pathParams."),
+                endpoint_verb = &format!("{:?}", self.endpoint_verb).to_ascii_uppercase(),
                 hook_name = self.hook_name,
                 hook_args = self.build_args_string(),
                 return_type = self.return_type.trim_matches('"'),
                 query_key = self.build_query_key()
             )
-            .to_string()
         } else {
             format!(
                 r#"export const {hook_name} = ({hook_args}) => {{
@@ -277,28 +300,27 @@ impl Hook {
 }}"#,
                 variables = self.build_vars_string(),
                 authorization_header = if self.uses_auth {
-                    "'Authorization': `${auth.accessToken}`,\n              "
+                    "'Authorization': `Bearer ${auth.accessToken}`,\n              "
                 } else {
                     ""
                 },
-                query_body = if self.body_params.len() > 0 {
+                query_body = if !self.body_params.is_empty() {
                     "body: JSON.stringify(bodyParams),\n"
                 } else {
                     ""
                 },
-                query_string = if self.query_params.len() > 0 {
+                query_string = if !self.query_params.is_empty() {
                     "?${new URLSearchParams(queryParams).toString()}"
                 } else {
                     ""
                 },
-                endpoint_url = self.endpoint_url.replace("{", "${pathParams."),
-                endpoint_verb = &format!("{:?}", self.endpoint_verb),
+                endpoint_url = self.endpoint_url.replace('{', "${pathParams."),
+                endpoint_verb = &format!("{:?}", self.endpoint_verb).to_ascii_uppercase(),
                 hook_name = self.hook_name,
                 hook_args = self.build_args_string(),
                 return_type = self.return_type.trim_matches('"'),
                 query_key = self.build_query_key()
             )
-            .to_string()
         }
     }
 }

@@ -3,6 +3,8 @@ pub mod container;
 pub mod dev;
 pub mod graphql;
 pub mod storage;
+pub mod tasks;
+pub mod utoipa;
 
 use crate::{project, BackendFramework};
 use crate::{utils::logger, BackendDatabase};
@@ -11,6 +13,7 @@ use std::path::PathBuf;
 
 #[derive(Clone)]
 pub struct InstallConfig {
+    pub project_name: String,
     pub project_dir: PathBuf,
     pub backend_framework: BackendFramework,
     pub backend_database: BackendDatabase,
@@ -18,7 +21,9 @@ pub struct InstallConfig {
     pub plugin_auth: bool,
     pub plugin_container: bool,
     pub plugin_storage: bool,
+    pub plugin_tasks: bool,
     pub plugin_graphql: bool,
+    pub plugin_utoipa: bool,
 }
 
 pub trait Plugin {
@@ -35,7 +40,7 @@ pub trait Plugin {
 
         let output = std::str::from_utf8(&output.stdout).unwrap();
 
-        if output.len() > 0 {
+        if !output.is_empty() {
             logger::error(
                 "Please stash and remove any changes (staged, unstaged, and untracked files)",
             );
@@ -94,7 +99,7 @@ pub fn install(plugin: impl Plugin, install_config: InstallConfig) -> Result<()>
 
     plugin.before_install()?;
     plugin.install(install_config.clone())?;
-    plugin.after_install(install_config.clone())?;
+    plugin.after_install(install_config)?;
 
     Ok(())
 }

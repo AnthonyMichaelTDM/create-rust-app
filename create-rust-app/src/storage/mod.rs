@@ -5,11 +5,11 @@ use std::time::Duration;
 use aws_sdk_s3::model::{Delete, ObjectIdentifier};
 use aws_sdk_s3::presigning::config::PresigningConfig;
 use aws_sdk_s3::types::ByteStream;
-use aws_sdk_s3::types::SdkError::*;
+//use aws_sdk_s3::types::SdkError::*;
 use aws_sdk_s3::{Client, Config, Endpoint};
 use aws_types::region::Region;
 use aws_types::Credentials;
-use base64;
+//use base64;
 use http::{HeaderMap, Uri};
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
@@ -26,9 +26,9 @@ type ID = i32;
 
 #[tsync::tsync]
 #[cfg(not(feature = "database_sqlite"))]
-type UTC = chrono::DateTime<chrono::Utc>;
+type Utc = chrono::DateTime<chrono::Utc>;
 #[cfg(feature = "database_sqlite")]
-type UTC = chrono::NaiveDateTime;
+type Utc = chrono::NaiveDateTime;
 
 #[derive(Clone)]
 pub struct Storage {
@@ -41,7 +41,11 @@ pub struct UploadURI {
     pub headers: HeaderMap,
     pub uri: Uri,
 }
-
+impl Default for Storage {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 impl Storage {
     pub async fn download(&self, key: String, to_path: PathBuf) -> Result<(), String> {
         let client = self.client_or_error()?;
@@ -80,7 +84,7 @@ impl Storage {
     ) -> Result<String, String> {
         if expires_in.is_none() {
             let host = self.host.clone();
-            let host = if host.ends_with("/") {
+            let host = if host.ends_with('/') {
                 host
             } else {
                 format!("{host}/")
@@ -120,7 +124,7 @@ impl Storage {
         key: String,
         bytes: Vec<u8>,
         content_type: String,
-        content_md5: String,
+        _content_md5: String,
     ) -> Result<(), String> {
         let stream = ByteStream::from(bytes);
 
@@ -208,7 +212,7 @@ impl Storage {
             .map_err(|err| {
                 self.error_string(
                     "Could not delete objects",
-                    format!("{:#?}", keys),
+                    format!("{keys:#?}"),
                     err.to_string(),
                 )
             })?;
@@ -222,31 +226,30 @@ impl Storage {
     }
 
     fn client_or_error(&self) -> Result<&Client, String> {
-        self.client.as_ref().ok_or(
-            "The storage is not available; did you set the right environment variables?"
-                .to_string(),
-        )
+        self.client.as_ref().ok_or_else(|| {
+            "The storage is not available; did you set the right environment variables?".to_string()
+        })
     }
 
     fn check_environment_variables() {
-        if std::env::var("S3_HOST").is_err() {
-            println!("Note: Storage disabled; 'S3_HOST' is not set.")
-        }
+        let vars = vec![
+            "S3_HOST",
+            "S3_REGION",
+            "S3_BUCKET",
+            "S3_ACCESS_KEY_ID",
+            "S3_SECRET_ACCESS_KEY",
+        ];
 
-        if std::env::var("S3_REGION").is_err() {
-            println!("Note: Storage disabled; 'S3_REGION' is not set.")
-        }
+        let unset_vars = vars
+            .into_iter()
+            .filter(|v| std::env::var(v).is_err())
+            .collect::<Vec<_>>();
 
-        if std::env::var("S3_BUCKET").is_err() {
-            println!("Note: Storage disabled; 'S3_BUCKET' is not set.")
-        }
-
-        if std::env::var("S3_ACCESS_KEY_ID").is_err() {
-            println!("Note: Storage disabled; 'S3_ACCESS_KEY_ID' is not set.")
-        }
-
-        if std::env::var("S3_SECRET_ACCESS_KEY").is_err() {
-            println!("Note: Storage disabled; 'S3_SECRET_ACCESS_KEY' is not set.")
+        if !unset_vars.is_empty() {
+            println!(
+                "Warning: Storage disabled; the following variables must be set: {}",
+                unset_vars.join(", ")
+            );
         }
     }
 
@@ -258,7 +261,7 @@ impl Storage {
     ) -> Result<Option<Client>, String> {
         Storage::check_environment_variables();
 
-        let host = host.clone();
+        let host = host;
         let region = Region::new(region);
         let s3_config = Config::builder()
             .region(region)
@@ -282,11 +285,12 @@ impl Storage {
     }
 
     pub fn new() -> Storage {
-        let host = std::env::var("S3_HOST").unwrap_or("".to_string());
-        let region = std::env::var("S3_REGION").unwrap_or("".to_string());
-        let bucket = std::env::var("S3_BUCKET").unwrap_or("".to_string());
-        let access_key_id = std::env::var("S3_ACCESS_KEY_ID").unwrap_or("".to_string());
-        let secret_access_key = std::env::var("S3_SECRET_ACCESS_KEY").unwrap_or("".to_string());
+        let host = std::env::var("S3_HOST").unwrap_or_else(|_| "".to_string());
+        let region = std::env::var("S3_REGION").unwrap_or_else(|_| "".to_string());
+        let bucket = std::env::var("S3_BUCKET").unwrap_or_else(|_| "".to_string());
+        let access_key_id = std::env::var("S3_ACCESS_KEY_ID").unwrap_or_else(|_| "".to_string());
+        let secret_access_key =
+            std::env::var("S3_SECRET_ACCESS_KEY").unwrap_or_else(|_| "".to_string());
 
         let client =
             Storage::init(host.clone(), region, access_key_id, secret_access_key).unwrap_or(None);

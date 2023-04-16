@@ -1,3 +1,5 @@
+use std::sync::Mutex;
+
 use poem::http::{StatusCode, Uri};
 use poem::middleware::{AddData, AddDataEndpoint};
 use poem::web::Data;
@@ -11,7 +13,9 @@ use super::template_utils::SinglePageApplication;
 ///  view: the template which renders the app
 ///
 ///  Full example (to render the `views/spa.html` template):
+/// ```
 ///  app = app.nest("/my-spa", create_rust_app::render_single_page_application("spa.html"));
+/// ```
 pub fn render_single_page_application(view: &str) -> AddDataEndpoint<Route, SinglePageApplication> {
     let view = view.strip_prefix("/").unwrap_or(view);
 
@@ -30,14 +34,51 @@ async fn render_spa_handler(spa_info: Data<&SinglePageApplication>) -> impl Into
     template_response(content)
 }
 
+// used to count number of refresh requests sent when viteJS dev server is down
+#[cfg(debug_assertions)]
+static REQUEST_REFRESH_COUNT: Mutex<i32> = Mutex::new(0);
+
+/// takes a request to, say, www.you_webapp.com/foo/bar and looks in the ./backend/views folder
+/// for a html file/template at the matching path (in this case, ./foo/bar.html),
+/// defaults to index.html
+///
+/// then, your frontend (all the css files, scripts, etc. in your frontend's vite manifest (at ./frontend/dist/manifest.json))
+/// will be compiled and injected into the template wherever `{{ bundle(name="index.tsx") }}` is (the `index.tsx` can be any .tsx file in ./frontend/bundles)
+///
+/// then, that compiled html is sent to the client
 #[handler]
 pub async fn render_views(uri: &Uri) -> impl IntoResponse {
     let path = uri.path();
 
     #[cfg(debug_assertions)]
-    if path.eq("/__vite_ping") {
-        println!("The vite dev server seems to be down...");
-        return StatusCode::NOT_FOUND.into_response();
+    {
+        // Catch viteJS ping requests and try to handle them gracefully
+        // Request the browser to refresh the page (maybe the server is up but the browser just can't reconnect)
+
+        if path.eq("/__vite_ping") {
+            #[cfg(feature = "plugin_dev")]
+            {
+                crate::dev::vitejs_ping_down().await;
+            }
+            let mut count = REQUEST_REFRESH_COUNT.lock().unwrap();
+            if *count < 3 {
+                *count = 1 + *count;
+                println!("The vite dev server seems to be down... refreshing page ({count}).");
+                return poem::web::Redirect::temporary(".").into_response();
+            } else {
+                println!("The vite dev server is down.");
+                return StatusCode::NOT_FOUND.into_response();
+            }
+        }
+        // If this is a non-viteJS ping request, let's reset the refresh attempt count
+        else {
+            #[cfg(feature = "plugin_dev")]
+            {
+                crate::dev::vitejs_ping_up().await;
+            }
+            let mut count = REQUEST_REFRESH_COUNT.lock().unwrap();
+            *count = 0;
+        }
     }
 
     let mut template_path = to_template_name(path);
@@ -83,24 +124,31 @@ pub async fn render_views(uri: &Uri) -> impl IntoResponse {
 
     let content = content_result.unwrap();
 
-    template_response(content)
+    template_response(uri, content)
 }
 
-fn template_response(content: String) -> Response {
+fn template_response(uri: &Uri, content: String) -> Response {
     let mut content = content;
     #[cfg(debug_assertions)]
     {
-        let inject: &str = r##"
+        let uri = Uri::from_str(req.connection_info().host());
+        let hostname = match &uri {
+            Ok(uri) => uri.host().unwrap_or("localhost"),
+            Err(_) => "localhost",
+        };
+        let inject: &str = &format!(
+            r##"
         <!-- development mode -->
         <script type="module">
-            import RefreshRuntime from 'http://localhost:21012/@react-refresh'
+            import RefreshRuntime from 'http://{hostname}:21012/@react-refresh'
             RefreshRuntime.injectIntoGlobalHook(window)
-            window.$RefreshReg$ = () => {}
+            window.$RefreshReg$ = () => {{}}
             window.$RefreshSig$ = () => (type) => type
             window.__vite_plugin_react_preamble_installed__ = true
         </script>
-        <script type="module" src="http://localhost:21012/src/dev.tsx"></script>
-        "##;
+        <script type="module" src="http://{hostname}:21012/src/dev.tsx"></script>
+        "##
+        );
 
         if content.contains("<body>") {
             content = content.replace("<body>", &format!("<body>{inject}"));

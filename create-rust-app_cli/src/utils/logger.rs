@@ -1,5 +1,5 @@
-use console::style;
 use crate::BackendDatabase;
+use console::style;
 
 pub fn message(msg: &str) {
     println!("[{}] {}", style("create-rust-app").blue(), msg)
@@ -45,7 +45,7 @@ pub fn error(msg: &str) {
 }
 
 pub fn exit(msg: &str, err: std::io::Error) -> ! {
-    eprintln!("{}: {:?}", msg, err);
+    eprintln!("{msg}: {err:?}");
     std::process::exit(1);
 }
 
@@ -54,7 +54,7 @@ pub fn add_dependency_msg(name: &str) {
 }
 
 pub fn project_created_msg(install_config: crate::plugins::InstallConfig) {
-    let project_dir = install_config.project_dir;
+    let project_name = install_config.project_name;
 
     command_msg("cargo watch --help\t# checking cargo-watch installation");
 
@@ -88,7 +88,7 @@ pub fn project_created_msg(install_config: crate::plugins::InstallConfig) {
 
     // TODO: update dev server to watch rust and frontend files and execute tsync/dsync calls accordingly
     if !is_cargo_watch_installed {
-        message(&format!("• Install cargo-watch (for development)"));
+        message("• Install cargo-watch (for development)");
         message(&format!(
             "  $ {}",
             style("cargo install cargo-watch").cyan()
@@ -96,30 +96,28 @@ pub fn project_created_msg(install_config: crate::plugins::InstallConfig) {
     }
 
     if !is_diesel_cli_installed {
-        message(&format!("• Install diesel (to manage the database)"));
+        message("• Install diesel (to manage the database)");
         message(&format!(
             "  $ {} \"{}\"",
             style("cargo install diesel_cli --no-default-features --features").cyan(),
             match install_config.backend_database {
                 BackendDatabase::Postgres => "postgres",
-                BackendDatabase::Sqlite => "sqlite-bundled"
+                BackendDatabase::Sqlite => "sqlite-bundled",
             }
         ));
     }
 
-    message(&format!("• Begin development!"));
-    message(&format!("  1. Change to your project directory"));
+    message("• Begin development!");
+    message("  1. Change to your project directory");
     message(&format!(
         "     $ {}",
-        style(format!("cd {:#?}", project_dir).to_string()).cyan()
+        style(format!("cd {project_name:#?}")).cyan()
     ));
-    message(&format!("  2. Open `.env` and set the DATABASE_URL"));
+    message("  2. Open `.env` and set the DATABASE_URL");
     message(&format!("     $ {}", style("vim .env").cyan()));
-    message(&format!("  3. Setup your database:"));
+    message("  3. Setup your database:");
     message(&format!("     $ {}", style("diesel database reset").cyan()));
-    message(&format!(
-        "  4. Develop! Run the following for continuous compilation:"
-    ));
+    message("  4. Develop! Run the following for continuous compilation:");
     message(&format!("     $ {}", style("cargo fullstack").cyan()));
-    message(&format!("• Enjoy!"));
+    message("• Enjoy!");
 }

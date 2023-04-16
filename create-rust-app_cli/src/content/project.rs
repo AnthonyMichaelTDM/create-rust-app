@@ -41,10 +41,10 @@ struct Asset;
 //     version.to_string()
 // }
 fn get_current_cra_lib_version() -> String {
-    "8".to_string()
+    "9".to_string()
 }
 
-fn add_bins_to_cargo_toml(project_dir: &std::path::PathBuf) -> Result<(), std::io::Error> {
+fn add_bins_to_cargo_toml(project_dir: &std::path::PathBuf, creations_options: &CreationOptions) -> Result<(), std::io::Error> {
     let mut path = std::path::PathBuf::from(project_dir);
     path.push("Cargo.toml");
 
@@ -77,6 +77,16 @@ fn add_bins_to_cargo_toml(project_dir: &std::path::PathBuf) -> Result<(), std::i
 
     let updated_toml = toml::to_string(&parsed_toml).unwrap();
 
+    let queue_bin = if creations_options.cra_enabled_features.contains(&"plugin_tasks".to_string()) {
+        r##"
+[[bin]]
+name = "queue"
+path = "backend/queue.rs"
+"##
+    } else {
+        ""
+    };
+
     let append_to_toml = format!(
         r#"
 [[bin]]
@@ -92,14 +102,20 @@ name = "dsync"
 path = ".cargo/bin/dsync.rs"
 
 [[bin]]
+name = "backend"
+path = ".cargo/bin/backend.rs"
+
+[[bin]]
+name = "frontend"
+path = ".cargo/bin/frontend.rs"
+
+[[bin]]
 name = "{project_name}"
 path = "backend/main.rs"
-
+{queue_bin}
 [profile.dev]
 debug-assertions=true
-"#,
-        project_name = project_name
-    );
+"#);
 
     let mut final_toml = String::default();
 
@@ -115,6 +131,7 @@ pub struct CreationOptions {
     pub cra_enabled_features: Vec<String>,
     pub backend_framework: BackendFramework,
     pub backend_database: BackendDatabase,
+    pub cli_mode: bool,
 }
 
 pub fn remove_non_framework_files(
@@ -126,7 +143,7 @@ pub fn remove_non_framework_files(
         let entry = entry.unwrap();
 
         let file = entry.path();
-        let path = file.clone().to_str().unwrap().to_string();
+        let path = file.to_str().unwrap().to_string();
 
         if path.ends_with("+actix_web") {
             if framework != BackendFramework::ActixWeb {
@@ -164,23 +181,20 @@ pub fn remove_non_framework_files(
     Ok(())
 }
 
-pub fn remove_non_database_files(
-    project_dir: &PathBuf,
-    database: BackendDatabase,
-) -> Result<()> {
+pub fn remove_non_database_files(project_dir: &PathBuf, database: BackendDatabase) -> Result<()> {
     /* Choose framework-specific files */
     for entry in WalkDir::new(project_dir) {
         let entry = entry.unwrap();
 
         let file = entry.path();
-        let path = file.clone().to_str().unwrap().to_string();
+        let path = file.to_str().unwrap().to_string();
 
         if path.ends_with("+database_postgres") {
             if database != BackendDatabase::Postgres {
                 logger::remove_file_msg(&format!("{:#?}", &file));
                 std::fs::remove_file(file)?;
             };
-            if database == BackendDatabase::Postgres{
+            if database == BackendDatabase::Postgres {
                 let dest = file.with_extension(
                     file.extension()
                         .unwrap()
@@ -225,10 +239,11 @@ pub fn create(project_name: &str, creation_options: CreationOptions) -> Result<(
             Err(err) => logger::exit("std::fs::canonicalize():", err),
         };
 
-        let proceed = Confirm::with_theme(&ColorfulTheme::default())
-            .with_prompt("Delete directory contents?")
-            .default(false)
-            .interact()?;
+        let proceed = !creation_options.cli_mode
+            && Confirm::with_theme(&ColorfulTheme::default())
+                .with_prompt("Delete directory contents?")
+                .default(false)
+                .interact()?;
 
         if proceed {
             match std::fs::remove_dir_all(&project_dir) {
@@ -254,6 +269,7 @@ pub fn create(project_name: &str, creation_options: CreationOptions) -> Result<(
         style(&format!("{:?}", creation_options.backend_framework)).yellow()
     ));
 
+    logger::message("Creating Project Directory");
     match std::fs::create_dir_all(&project_dir) {
         Ok(_) => {}
         Err(err) => logger::exit("std::fs::create_dir_all():", err),
@@ -276,18 +292,18 @@ pub fn create(project_name: &str, creation_options: CreationOptions) -> Result<(
 
     // cleanup: remove src/main.rs
     logger::command_msg("rm src/main.rs");
-    let mut main_file = PathBuf::from(project_dir.clone());
+    let mut main_file = project_dir.clone();
     main_file.push("src");
     main_file.push("main.rs");
     std::fs::remove_file(main_file)?;
 
     // cleanup: remove src/
     logger::command_msg("rmdir src/main.rs");
-    let mut src_folder = PathBuf::from(project_dir.clone());
+    let mut src_folder = project_dir.clone();
     src_folder.push("src");
     std::fs::remove_dir(src_folder)?;
 
-    add_bins_to_cargo_toml(&project_dir)?;
+    add_bins_to_cargo_toml(&project_dir, &creation_options)?;
 
     let framework = creation_options.backend_framework;
     let database = creation_options.backend_database;
@@ -295,7 +311,7 @@ pub fn create(project_name: &str, creation_options: CreationOptions) -> Result<(
 
     let mut enabled_features: String = cra_enabled_features
         .iter()
-        .map(|f| format!("\"{}\"", f))
+        .map(|f| format!("\"{f}\""))
         .collect::<Vec<String>>()
         .join(", ");
     if !cra_enabled_features.is_empty() {
@@ -354,10 +370,13 @@ pub fn create(project_name: &str, creation_options: CreationOptions) -> Result<(
     add_dependency(
         &project_dir,
         "diesel",
-        &format!(r#"diesel = {{ version="2.0.0-rc.1", default-features = false, features = ["{db}", "r2d2", "chrono"] }}"#, db = match database {
-            BackendDatabase::Postgres => "postgres",
-            BackendDatabase::Sqlite => "sqlite",
-        }),
+        &format!(
+            r#"diesel = {{ version="2.0.0-rc.1", default-features = false, features = ["{db}", "r2d2", "chrono"] }}"#,
+            db = match database {
+                BackendDatabase::Postgres => "postgres",
+                BackendDatabase::Sqlite => "sqlite",
+            }
+        ),
     )?;
     add_dependency(
         &project_dir,
@@ -381,7 +400,7 @@ pub fn create(project_name: &str, creation_options: CreationOptions) -> Result<(
 
         logger::add_file_msg(filename.as_ref());
         std::fs::create_dir_all(directory_path)?;
-        std::fs::write(file_path, file_contents)?;
+        std::fs::write(file_path, file_contents.data)?;
     }
 
     remove_non_framework_files(&project_dir, framework)?;
@@ -419,9 +438,12 @@ pub fn create(project_name: &str, creation_options: CreationOptions) -> Result<(
         env_example_file.push(".env.example");
         env_file.push(".env");
         let contents = std::fs::read_to_string(&env_example_file)?;
-        let contents = contents.replace("postgres://postgres:postgres@localhost/database", "dev.sqlite");
+        let contents = contents.replace(
+            "postgres://postgres:postgres@localhost/database",
+            "dev.sqlite",
+        );
         std::fs::write(env_example_file, contents.clone())?;
-        std::fs::write(env_file, contents.clone())?;
+        std::fs::write(env_file, contents)?;
     }
 
     /*
@@ -473,12 +495,18 @@ pub fn create(project_name: &str, creation_options: CreationOptions) -> Result<(
         std::process::exit(1);
     }
 
+    // check if a git user name & email are configured, if not either ask for one or fail if in cli-mode
     logger::command_msg("git config user.name");
-
     let git_config_user_name = git::check_config(&project_dir, "user.name");
-
     if !git_config_user_name {
         logger::message("You do not have a git user name set.");
+
+        // if being created in cli-only mode, don't ask for a new user.name,
+        // just tell them how to set it and exit with status code 1
+        if creation_options.cli_mode {
+            logger::error("Running in non-interactive mode and git user.name not set.\nYou can set it with this command:\n\t`git config --global user.name <name>`");
+            std::process::exit(1);
+        }
 
         let mut valid_user_name = false;
         let mut invalid_input = false;
@@ -493,7 +521,7 @@ pub fn create(project_name: &str, creation_options: CreationOptions) -> Result<(
 
             logger::command_msg(&format!("git config user.name {:#?}", &input));
 
-            if input.len() > 0
+            if !input.is_empty()
                 && git::set_config(&project_dir, "user.name", &input)
                 && git::check_config(&project_dir, "user.name")
             {
@@ -504,10 +532,17 @@ pub fn create(project_name: &str, creation_options: CreationOptions) -> Result<(
         }
     }
 
+    logger::command_msg("git config user.email");
     let git_config_user_email = git::check_config(&project_dir, "user.email");
-
     if !git_config_user_email {
         logger::message("You do not have a git user email set.");
+
+        // if being created in cli-only mode, don't ask for a new user.email,
+        // just tell them how to set it and exit with status code 1
+        if creation_options.cli_mode {
+            logger::error("Running in non-interactive mode and git user.email not set.\nYou can set it with this command:\n\t`git config --global user.email <email>`");
+            std::process::exit(1);
+        }
 
         let mut valid_user_email = false;
         let mut invalid_input = false;
@@ -522,7 +557,7 @@ pub fn create(project_name: &str, creation_options: CreationOptions) -> Result<(
 
             logger::command_msg(&format!("git config user.email {:#?}", &input));
 
-            if input.len() > 0
+            if !input.is_empty()
                 && git::set_config(&project_dir, "user.email", &input)
                 && git::check_config(&project_dir, "user.email")
             {
@@ -583,18 +618,22 @@ pub fn create(project_name: &str, creation_options: CreationOptions) -> Result<(
     Ok(())
 }
 
-pub fn create_resource(backend: BackendFramework, resource_name: &str) -> Result<()> {
+pub fn create_resource(
+    backend: BackendFramework,
+    resource_name: &str,
+    include_qsync_attr: bool,
+) -> Result<()> {
     let resource_name = resource_name.to_pascal_case();
 
-    logger::message(&format!("Creating resource '{}'", resource_name));
+    logger::message(&format!("Creating resource '{resource_name}'"));
 
     crate::content::service::create(
         backend,
         &resource_name,
         &format!("services::{}::api()", &resource_name),
         &resource_name.to_snake_case(),
+        include_qsync_attr,
     )?;
-    crate::content::model::create(resource_name.as_str())?;
 
     Ok(())
 }

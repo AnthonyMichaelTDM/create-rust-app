@@ -33,7 +33,7 @@ impl Plugin for GraphQL {
 
             add_file_msg(filename.as_ref());
             std::fs::create_dir_all(directory_path)?;
-            std::fs::write(file_path, file_contents)?;
+            std::fs::write(file_path, file_contents.data)?;
         }
 
         add_dependency(
@@ -187,8 +187,7 @@ use actix_web::guard;"##,
         .data(app_data.database.clone())
         .data(app_data.mailer.clone()){other_data}
         .finish();
-"##,
-                        other_data = other_data
+"##
                     ),
                 )?;
 

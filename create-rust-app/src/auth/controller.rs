@@ -6,10 +6,10 @@ use crate::auth::{
 };
 use crate::{Database, Mailer};
 
-use serde::{Deserialize, Serialize};
 use lazy_static::lazy_static;
+use serde::{Deserialize, Serialize};
 
-pub const COOKIE_NAME: &'static str = "refresh_token";
+pub const COOKIE_NAME: &str = "refresh_token";
 
 lazy_static! {
     static ref ARGON_CONFIG: argon2::Config<'static> = argon2::Config {
@@ -23,19 +23,27 @@ lazy_static! {
     };
 }
 
+#[cfg(not(debug_assertions))]
 type Seconds = i64;
 type StatusCode = i32;
 type Message = &'static str;
 
 #[derive(Deserialize, Serialize)]
+#[cfg_attr(feature = "plugin_utoipa", derive(utoipa::ToSchema))]
+/// Rust struct representing the Json body of
+/// POST requests to the .../login endpoint
 pub struct LoginInput {
     email: String,
     password: String,
     device: Option<String>,
-    ttl: Option<Seconds>,
+    #[cfg(not(debug_assertions))]
+    ttl: Option<Seconds>, // Seconds
+    #[cfg(debug_assertions)]
+    ttl: Option<i64>, // Seconds
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+/// TODO: documentation
 pub struct RefreshTokenClaims {
     exp: usize,
     sub: ID,
@@ -43,12 +51,16 @@ pub struct RefreshTokenClaims {
 }
 
 #[derive(Serialize, Deserialize)]
+#[cfg_attr(feature = "plugin_utoipa", derive(utoipa::ToSchema))]
+/// Rust struct representing the Json body of
+/// POST requests to the .../register endpoint
 pub struct RegisterInput {
     email: String,
     password: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+/// TODO: documentation
 pub struct RegistrationClaims {
     exp: usize,
     sub: ID,
@@ -56,16 +68,23 @@ pub struct RegistrationClaims {
 }
 
 #[derive(Serialize, Deserialize)]
+#[cfg_attr(feature = "plugin_utoipa", derive(utoipa::IntoParams))]
+/// Rust struct representing the Json body of
+/// GET requests to the .../activate endpoint
 pub struct ActivationInput {
     activation_token: String,
 }
 
 #[derive(Serialize, Deserialize)]
+#[cfg_attr(feature = "plugin_utoipa", derive(utoipa::ToSchema))]
+/// Rust struct representing the Json body of
+/// POST requests to the /forgot endpoint
 pub struct ForgotInput {
     email: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+/// TODO: documentation
 pub struct ResetTokenClaims {
     exp: usize,
     sub: ID,
@@ -73,18 +92,35 @@ pub struct ResetTokenClaims {
 }
 
 #[derive(Serialize, Deserialize)]
+#[cfg_attr(feature = "plugin_utoipa", derive(utoipa::ToSchema))]
+/// Rust struct representing the Json body of
+/// POST requests to the /change endpoint
 pub struct ChangeInput {
     old_password: String,
     new_password: String,
 }
 
 #[derive(Serialize, Deserialize)]
+#[cfg_attr(feature = "plugin_utoipa", derive(utoipa::ToSchema))]
+/// Rust struct representing the Json body of
+/// POST requests to the /reset endpoint
 pub struct ResetInput {
     reset_token: String,
     new_password: String,
 }
 
 /// /sessions
+///
+/// queries [`db`](`Database`) for all sessions owned by the User
+/// associated with [`auth`](`Auth`)
+///
+/// breaks up the results of that query as defined by [`info`](`PaginationParams`)
+///
+///
+/// # Returns [`Result`]
+/// - Ok([`UserSessionResponse`])
+///     - the results of the query paginated according to [`info`](`PaginationParams`)
+/// - Err([`StatusCode`], [`Message`])
 pub fn get_sessions(
     db: &Database,
     auth: &Auth,
@@ -92,7 +128,7 @@ pub fn get_sessions(
 ) -> Result<UserSessionResponse, (StatusCode, Message)> {
     let mut db = db.pool.get().unwrap();
 
-    let sessions = UserSession::read_all(&mut db, &info, auth.user_id);
+    let sessions = UserSession::read_all(&mut db, info, auth.user_id);
 
     if sessions.is_err() {
         return Err((500, "Could not fetch sessions."));
@@ -119,12 +155,7 @@ pub fn get_sessions(
     }
 
     let num_sessions = num_sessions.unwrap();
-    let num_pages = (num_sessions / info.page_size)
-        + (if num_sessions % info.page_size != 0 {
-            1
-        } else {
-            0
-        });
+    let num_pages = (num_sessions / info.page_size) + i64::from(num_sessions % info.page_size != 0);
 
     let resp = UserSessionResponse {
         sessions: sessions_json,
@@ -135,6 +166,13 @@ pub fn get_sessions(
 }
 
 /// /sessions/{id}
+///
+/// deletes the entry in the `user_session` with the specified [`item_id`](`ID`) from
+/// [`db`](`Database`) if it's owned by the User associated with [`auth`](`Auth`)
+///
+/// # Returns [`Result`]
+/// - Ok(`()`)
+/// - Err([`StatusCode`], [`Message`])
 pub fn destroy_session(
     db: &Database,
     auth: &Auth,
@@ -162,6 +200,13 @@ pub fn destroy_session(
 }
 
 /// /sessions
+///
+/// destroys all entries in the `user_session` table in [`db`](`Database`) owned
+/// by the User associated with [`auth`](`Auth`)
+///
+/// # Returns [`Result`]
+/// - Ok(`()`)
+/// - Err([`StatusCode`], [`Message`])
 pub fn destroy_sessions(db: &Database, auth: &Auth) -> Result<(), (StatusCode, Message)> {
     let mut db = db.pool.get().unwrap();
 
@@ -176,9 +221,15 @@ type AccessToken = String;
 type RefreshToken = String;
 
 /// /login
-/// Returns a tuple;
-/// - the access token should be sent to the user in the body, and,
-/// - the reset token should be sent as a secure, http-only, and same_site=strict cookie.
+///
+/// creates a user session for the user associated with [`item`](`LoginInput`)
+/// in the request body (have the `content-type` header set to `application/json` and content that can be deserialized into [`LoginInput`])
+///
+/// # Returns [`Result`]
+/// - Ok([`AccessToken`], [`RefreshToken`])
+///     - an access token that should be sent to the user in the response body,
+///     - a reset token that should be sent as a secure, http-only, and same_site=strict cookie.
+/// - Err([`StatusCode`], [`Message`])
 pub fn login(
     db: &Database,
     item: &LoginInput,
@@ -191,6 +242,8 @@ pub fn login(
         let device_string = item.device.as_ref().unwrap();
         if device_string.len() > 256 {
             return Err((400, "'device' cannot be longer than 256 characters."));
+        } else {
+            device = Some(device_string.to_owned());
         }
     }
 
@@ -206,7 +259,13 @@ pub fn login(
         return Err((400, "Account has not been activated."));
     }
 
-    let is_valid = argon2::verify_encoded_ext(&user.hash_password, item.password.as_bytes(), &ARGON_CONFIG.secret, &ARGON_CONFIG.ad).unwrap();
+    let is_valid = argon2::verify_encoded_ext(
+        &user.hash_password,
+        item.password.as_bytes(),
+        ARGON_CONFIG.secret,
+        ARGON_CONFIG.ad,
+    )
+    .unwrap();
 
     if !is_valid {
         return Err((401, "Invalid credentials."));
@@ -279,6 +338,10 @@ pub fn login(
 
 /// /logout
 /// If this is successful, delete the cookie storing the refresh token
+///
+/// # Returns [`Result`]
+/// - Ok(`()`)
+/// - Err([`StatusCode`], [`Message`])
 pub fn logout(db: &Database, refresh_token: Option<&'_ str>) -> Result<(), (StatusCode, Message)> {
     let mut db = db.pool.get().unwrap();
 
@@ -306,9 +369,14 @@ pub fn logout(db: &Database, refresh_token: Option<&'_ str>) -> Result<(), (Stat
 }
 
 /// /refresh
-/// Returns a tuple;
-/// - the access token should be sent to the user in the body, and,
-/// - the reset token should be sent as a secure, http-only, and same_site=strict cookie.
+///
+/// refreshes the user session associated with the clients refresh_token cookie
+///
+/// # Returns [`Result`]
+/// - Ok([`AccessToken`], [`RefreshToken`])
+///     - an access token that should be sent to the user in the response body,
+///     - a reset token that should be sent as a secure, http-only, and same_site=strict cookie.
+/// - Err([`StatusCode`], [`Message`])
 pub fn refresh(
     db: &Database,
     refresh_token_str: Option<&'_ str>,
@@ -322,7 +390,7 @@ pub fn refresh(
     let refresh_token_str = refresh_token_str.unwrap();
 
     let refresh_token = decode::<RefreshTokenClaims>(
-        &refresh_token_str,
+        refresh_token_str,
         &DecodingKey::from_secret(std::env::var("SECRET_KEY").unwrap().as_ref()),
         &Validation::default(),
     );
@@ -408,6 +476,16 @@ pub fn refresh(
 }
 
 /// /register
+///
+/// creates a new User with the information in [`item`](`RegisterInput`)
+///
+/// sends an email, using [`mailer`](`Mailer`), to the email address in [`item`](`RegisterInput`)
+/// that contains a unique link that allows the recipient to activate the account associated with
+/// that email address
+///
+/// # Returns [`Result`]
+/// - Ok(`()`)
+/// - Err([`StatusCode`], [`Message`])
 pub fn register(
     db: &Database,
     item: &RegisterInput,
@@ -415,10 +493,9 @@ pub fn register(
 ) -> Result<(), (StatusCode, Message)> {
     let mut db = db.pool.get().unwrap();
 
-    let user = User::find_by_email(&mut db, (&item.email).to_string());
+    let user = User::find_by_email(&mut db, item.email.to_string());
 
-    if user.is_ok() {
-        let user = user.unwrap();
+    if let Ok(user) = user {
         if !user.activated {
             User::delete(&mut db, user.id).unwrap();
         } else {
@@ -427,7 +504,7 @@ pub fn register(
     }
 
     let salt = generate_salt();
-    let hash = argon2::hash_encoded(&item.password.as_bytes(), &salt, &ARGON_CONFIG).unwrap();
+    let hash = argon2::hash_encoded(item.password.as_bytes(), &salt, &ARGON_CONFIG).unwrap();
 
     let user = User::create(
         &mut db,
@@ -453,18 +530,21 @@ pub fn register(
     .unwrap();
 
     mail::auth_register::send(
-        &mailer,
+        mailer,
         &user.email,
-        &format!(
-            "http://localhost:3000/activate?token={token}",
-            token = token
-        ),
+        &format!("http://localhost:3000/activate?token={token}"),
     );
 
     Ok(())
 }
 
 /// /activate
+///
+/// activates the account associated with the token in [`item`](`ActivationInput`)
+///
+/// # Returns [`Result`]
+/// - Ok(`()`)
+/// - Err([`StatusCode`], [`Message`])
 pub fn activate(
     db: &Database,
     item: &ActivationInput,
@@ -518,12 +598,23 @@ pub fn activate(
         return Err((500, "Could not activate user."));
     }
 
-    mail::auth_activated::send(&mailer, &user.email);
+    mail::auth_activated::send(mailer, &user.email);
 
     Ok(())
 }
 
 /// /forgot
+/// sends an email to the email in the ['ForgotInput'] Json in the request body
+/// that will allow the user associated with that email to change their password
+///
+/// sends an email, using [`mailer`](`Mailer`), to the email address in [`item`](`RegisterInput`)
+/// that contains a unique link that allows the recipient to reset the password
+/// of the account associated with that email address (or create a new account if there is
+/// no accound accosiated with the email address)
+///
+/// # Returns [`Result`]
+/// - Ok(`()`)
+/// - Err([`StatusCode`], [`Message`])
 pub fn forgot_password(
     db: &Database,
     item: &ForgotInput,
@@ -533,9 +624,7 @@ pub fn forgot_password(
 
     let user_result = User::find_by_email(&mut db, item.email.clone());
 
-    if user_result.is_ok() {
-        let user = user_result.unwrap();
-
+    if let Ok(user) = user_result {
         // if !user.activated {
         //   return Ok(HttpResponse::build(400).body(" has not been activate"))
         // }
@@ -553,27 +642,31 @@ pub fn forgot_password(
         )
         .unwrap();
 
-        let link = &format!(
-            "http://localhost:3000/reset?token={reset_token}",
-            reset_token = reset_token
-        );
-        mail::auth_recover_existent_account::send(&mailer, &user.email, link);
+        let link = &format!("http://localhost:3000/reset?token={reset_token}");
+        mail::auth_recover_existent_account::send(mailer, &user.email, link);
     } else {
-        let link = &format!("http://localhost:300/register");
-        mail::auth_recover_nonexistent_account::send(&mailer, &item.email, link);
+        let link = &"http://localhost:300/register".to_string();
+        mail::auth_recover_nonexistent_account::send(mailer, &item.email, link);
     }
 
     Ok(())
 }
 
 /// /change
+///
+/// change the password of the User associated with [`auth`](`Auth`)
+/// from [`item.old_password`](`ChangeInput`) to [`item.new_password`](`ChangeInput`)
+///
+/// # Returns [`Result`]
+/// - Ok(`()`)
+/// - Err([`StatusCode`], [`Message`])
 pub fn change_password(
     db: &Database,
     item: &ChangeInput,
     auth: &Auth,
     mailer: &Mailer,
 ) -> Result<(), (StatusCode, Message)> {
-    if item.old_password.len() == 0 || item.new_password.len() == 0 {
+    if item.old_password.is_empty() || item.new_password.is_empty() {
         return Err((400, "Missing password"));
     }
 
@@ -595,14 +688,21 @@ pub fn change_password(
         return Err((400, "Account has not been activated"));
     }
 
-    let is_old_password_valid = argon2::verify_encoded_ext(&user.hash_password, item.old_password.as_bytes(), &ARGON_CONFIG.secret, &ARGON_CONFIG.ad).unwrap();
+    let is_old_password_valid = argon2::verify_encoded_ext(
+        &user.hash_password,
+        item.old_password.as_bytes(),
+        ARGON_CONFIG.secret,
+        ARGON_CONFIG.ad,
+    )
+    .unwrap();
 
     if !is_old_password_valid {
         return Err((400, "Invalid credentials"));
     }
 
     let salt = generate_salt();
-    let new_hash = argon2::hash_encoded(&item.new_password.as_bytes(), &salt, &ARGON_CONFIG).unwrap();
+    let new_hash =
+        argon2::hash_encoded(item.new_password.as_bytes(), &salt, &ARGON_CONFIG).unwrap();
 
     let updated_user = User::update(
         &mut db,
@@ -618,15 +718,25 @@ pub fn change_password(
         return Err((500, "Could not update password"));
     }
 
-    mail::auth_password_changed::send(&mailer, &user.email);
+    mail::auth_password_changed::send(mailer, &user.email);
 
     Ok(())
 }
 
 /// /check
+///
+/// just a lifeline function, clients can post to this endpoint to check
+/// if the auth service is running
 pub fn check(_: &Auth) {}
 
 /// reset
+///
+/// changes the password of the user associated with [`item.reset_token`](`ResetInput`)
+/// to [`item.new_password`](`ResetInput`)
+///
+/// # Returns [`Result`]
+/// - Ok(`()`)
+/// - Err([`StatusCode`], [`Message`])
 pub fn reset_password(
     db: &Database,
     item: &ResetInput,
@@ -634,7 +744,7 @@ pub fn reset_password(
 ) -> Result<(), (StatusCode, Message)> {
     let mut db = db.pool.get().unwrap();
 
-    if item.new_password.len() == 0 {
+    if item.new_password.is_empty() {
         return Err((400, "Missing password"));
     }
 
@@ -667,7 +777,8 @@ pub fn reset_password(
     }
 
     let salt = generate_salt();
-    let new_hash = argon2::hash_encoded(&item.new_password.as_bytes(), &salt, &ARGON_CONFIG).unwrap();
+    let new_hash =
+        argon2::hash_encoded(item.new_password.as_bytes(), &salt, &ARGON_CONFIG).unwrap();
 
     let update = User::update(
         &mut db,
@@ -683,7 +794,7 @@ pub fn reset_password(
         return Err((500, "Could not update password"));
     }
 
-    mail::auth_password_reset::send(&mailer, &user.email);
+    mail::auth_password_reset::send(mailer, &user.email);
 
     Ok(())
 }

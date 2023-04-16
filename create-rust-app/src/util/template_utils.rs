@@ -3,16 +3,19 @@ use std::collections::HashMap;
 use tera::Tera;
 
 #[derive(Clone)]
+/// structure to represent the view (singular) of a single page application
 pub struct SinglePageApplication {
     pub view_name: String,
 }
 
 lazy_static! {
+    /// all the Templates (html files) included in backend/views/..., uses Tera to bundle the frontend into the template
+    /// TODO: ensure this is accurate documentation
     pub static ref TEMPLATES: Tera = {
         let mut tera = match Tera::new("backend/views/**/*.html") {
             Ok(t) => t,
             Err(e) => {
-                println!("Parsing error(s): {}", e);
+                println!("Parsing error(s): {e}");
                 ::std::process::exit(1);
             }
         };
@@ -26,14 +29,15 @@ lazy_static! {
     };
 }
 
-pub const DEFAULT_TEMPLATE: &'static str = "index.html";
+pub const DEFAULT_TEMPLATE: &str = "index.html";
 pub fn to_template_name(request_path: &str) -> &'_ str {
-    let request_path = request_path.strip_prefix("/").unwrap();
-    return if request_path.eq("") {
+    let request_path = request_path.strip_prefix('/').unwrap();
+
+    if request_path.eq("") {
         DEFAULT_TEMPLATE
     } else {
         request_path
-    };
+    }
 }
 
 /// This implements the {{ bundle(name="index.tsx") }} function for our templates
@@ -42,7 +46,7 @@ impl tera::Function for InjectBundle {
     fn call(&self, args: &HashMap<String, serde_json::Value>) -> tera::Result<serde_json::Value> {
         match args.get("name") {
             Some(val) => {
-                return match tera::from_value::<String>(val.clone()) {
+                match tera::from_value::<String>(val.clone()) {
                     Ok(bundle_name) => {
                         let inject: String;
 
@@ -96,14 +100,20 @@ impl tera::Function for InjectBundle {
                         #[cfg(debug_assertions)]
                         {
                             inject = format!(
-                                r#"<script type="module" src="http://localhost:21012/bundles/{bundle_name}"></script>"#
+                                r#"<script>
+                                // create a script tag for the vite dev server
+                                const script = document.createElement('script');
+                                script.type = 'module';
+                                script.src = `http://${{window.location.hostname}}:21012/bundles/{bundle_name}`;
+                                document.head.appendChild(script);
+                                </script>"#
                             );
                         }
 
                         Ok(tera::to_value(inject).unwrap())
                     }
                     Err(_) => panic!("No bundle named '{:#?}'", val),
-                };
+                }
             }
             None => Err("oops".into()),
         }
@@ -114,21 +124,22 @@ impl tera::Function for InjectBundle {
     }
 }
 
+#[allow(dead_code, non_snake_case)]
 #[derive(serde::Deserialize)]
 pub struct ViteManifestEntry {
-    // Script content to load for this entry
+    /// Script content to load for this entry
     file: String,
 
-    // Script content to lazy-load for this entry
+    /// Script content to lazy-load for this entry
     dynamicImports: Option<Vec<String>>, // using `import(..)`
 
-    // Style content to load for this entry
+    /// Style content to load for this entry
     css: Option<Vec<String>>, // using import '*.css'
 
-    // If true, eager-load this content
+    /// If true, eager-load this content
     isEntry: Option<bool>,
 
-    // If true, lazy-load this content
+    /// If true, lazy-load this content
     isDynamicEntry: Option<bool>, // src: String, /* => not necessary :) */
                                   // assets: Option<Vec<String>>, /* => these will be served by the server! */
 }

@@ -11,12 +11,8 @@ fn get_migration_number() -> usize {
         logger::message("Migrations directory does not exist, create it?");
     }
 
-    let count = match migrations_dir.read_dir().unwrap() {
-        v => v.count(),
-        // Err(_) => 3 // guess the migration number
-    };
-
-    return count;
+    let v = migrations_dir.read_dir().unwrap();
+    v.count()
 }
 
 pub fn create(name: &str, up: &str, down: &str) -> Result<()> {
@@ -29,8 +25,8 @@ pub fn create(name: &str, up: &str, down: &str) -> Result<()> {
     migrations_dir.push(&migration_dir_name);
     ensure_directory(&migrations_dir, false)?;
 
-    let up_file = PathBuf::from(format!("migrations/{}/up.sql", migration_dir_name));
-    let down_file = PathBuf::from(format!("migrations/{}/down.sql", migration_dir_name));
+    let up_file = PathBuf::from(format!("migrations/{migration_dir_name}/up.sql"));
+    let down_file = PathBuf::from(format!("migrations/{migration_dir_name}/down.sql"));
     ensure_file(&up_file, Some(up))?;
     ensure_file(&down_file, Some(down))?;
 
